@@ -5,6 +5,5 @@
 
 注：对马与商鞅的距离没有限制，只要角度数为 72° 就能生成商鞅．
 
-<img src="C:\Users\Fiddie\Desktop\Horse.jpg" style="zoom:25%;" />
-
+![](C:\Users\Fiddie\Desktop\Horse.jpg = 25%x)
 
