@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>彭罗斯网格选点与72°中心（红点）检测</title>
+<style>
+  :root {
+    --bg: #0f1116;
+    --panel: #161a22;
+    --text: #e6edf3;
+    --muted: #9aa4b2;
+    --accent: #5fb3ff;
+    --thin: #6cbf43;    /* 瘦菱形颜色（绿） */
+    --thick: #8fb9ff;   /* 胖菱形颜色（蓝） */
+    --grid: #223045;
+  }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, "SF Pro", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", Arial, sans-serif;
+  }
+  header {
+    padding: 10px 14px; background: var(--panel);
+    border-bottom: 1px solid #1f2633;
+  }
+  header h1 { font-size: 16px; margin: 0; }
+  #wrap { display: grid; grid-template-columns: 320px 1fr; height: calc(100% - 48px);}
+  aside {
+    background: var(--panel);
+    border-right: 1px solid #1f2633;
+    padding: 12px;
+    overflow: auto;
+  }
+  aside h2 { font-size: 14px; margin: 10px 0 6px; color: var(--muted); }
+  aside .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+  aside label { min-width: 86px; color: var(--muted); }
+  aside input[type=range] { width: 140px; }
+  aside input[type=number] { width: 70px; }
+  aside button {
+    background: #1f2737; color: var(--text);
+    border: 1px solid #2a3550; border-radius: 6px;
+    padding: 8px 10px; cursor: pointer;
+  }
+  aside button:hover { background: #26324a; }
+  aside .muted { color: var(--muted); font-size: 12px; }
+  #stats { margin-top: 8px; padding-top: 8px; border-top: 1px dashed #2a3550; }
+  #canvasWrap { position: relative; }
+  canvas { display: block; width: 100%; height: 100%; background: #0a0c12; }
+  .tip {
+    position: absolute; pointer-events: none;
+    background: rgba(20,26,38,0.92); color: var(--text);
+    border: 1px solid #2a3550; border-radius: 6px; padding: 4px 6px;
+    font-size: 12px; transform: translate(10px, -10px); white-space: nowrap;
+  }
+  .legend {
+    display: grid; grid-template-columns: auto 1fr; gap: 8px 10px; align-items: center;
+    background: #121722; padding: 8px; border: 1px solid #2a3550; border-radius: 8px;
+  }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .dot.black { background: #111; border: 2px solid #fff; }
+  .dot.red { background: #ff375f; border: 2px solid #ffd1dc; }
+  .dot.vtx { background: #9aa4b2; border: 2px solid #c0c8d6; }
+  .kbd{display:inline-block;border:1px solid #2a3550;border-bottom-width:2px;border-radius:4px;padding:0 4px;background:#0c1220;color:#d2d7e2;font-size:12px}
+  a { color: var(--accent); text-decoration: none; }
+</style>
+</head>
+<body>
+  <header><h1>彭罗斯网格选点 → 72° 连线成环中心（红点）</h1></header>
+  <div id="wrap">
+    <aside>
+      <div class="legend" style="margin-bottom:10px">
+        <div class="dot vtx"></div><div>网格顶点（可点击）</div>
+        <div class="dot black"></div><div>黑点（已选）</div>
+        <div class="dot red"></div><div>红点（计算所得中心）</div>
+      </div>
+
+      <h2>网格生成</h2>
+      <div class="row">
+        <label>细分层数</label>
+        <input id="iter" type="range" min="4" max="8" value="6" />
+        <input id="iterNum" type="number" min="4" max="8" value="6" />
+      </div>
+      <div class="row">
+        <button id="regen">重新生成网格</button>
+      </div>
+      <div class="muted">使用 Robinson 三角形细分，6~7 层有较密的网格。</div>
+
+      <h2>选点</h2>
+      <div class="row">
+        <button id="clearSel">清空选择</button>
+        <button id="random20">随机 20 点</button>
+      </div>
+      <div class="row">
+        <label style="min-width:auto">
+          <input type="checkbox" id="fiveFold" />
+          五对称选点
+        </label>
+      </div>
+      <div class="muted">提示：按住 <span class="kbd">Shift</span> 拖拽可框选/反选一片区域。</div>
+      <div class="muted">开启五对称后，点击一个点会同时选择/取消所有与它五对称的点。</div>
+
+      <h2>红点判定</h2>
+      <div class="row">
+        <label>角度容差</label>
+        <input id="angTol" type="range" min="0.2" max="2.0" step="0.1" value="0.8" />
+        <input id="angTolNum" type="number" min="0.2" max="2.0" step="0.1" value="0.8" />°
+      </div>
+      <div class="row">
+        <button id="calc">计算红点</button>
+        <button id="clearRed">清除红点</button>
+      </div>
+      <div id="stats" class="muted"></div>
+
+      <h2>说明</h2>
+      <div class="muted">
+        红点定义：从某中心向<strong>所选的 5 个黑点</strong>连线，绕一圈<strong>依次成 72°</strong>，
+        即<strong>等角五等分</strong> 360°。位置相同的红点只算 1 个。<br><br>
+        网格是程序生成的 P3 彭罗斯菱形网格（瘦/胖菱形），
+        采用红/蓝等腰三角形的黄金分割细分法，再把同色共享底边的两三角合并为菱形。细分规则出自
+        Preshing 的文章（见文末参考）。计算潜在中心时，会对每个三元组 ABC 求
+        “∠AOB = ∠BOC = 72°” 的圆-圆交点候选，然后再用所有黑点的极角进行验证。
+      </div>
+      <h2>参考</h2>
+      <div class="muted">
+        Penrose 细分（Robinson triangles）与实现思路：Jeff Preshing，
+        <a href="https://preshing.com/20110831/penrose-tiling-explained" target="_blank">Penrose Tiling Explained</a>。  
+      </div>
+    </aside>
+
+    <div id="canvasWrap">
+      <canvas id="cv"></canvas>
+      <div id="tip" class="tip" style="display:none"></div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  // ---------- Geometry helpers ----------
+  const PHI = (1 + Math.sqrt(5)) / 2;
+  const TAU = Math.PI * 2;
+  const DEG = Math.PI / 180;
+  const THETA = 72 * DEG; // 72°
+  const EPS = 1e-9;
+
+  const vec = (x, y) => ({x, y});
+  const add = (a, b) => vec(a.x + b.x, a.y + b.y);
+  const sub = (a, b) => vec(a.x - b.x, a.y - b.y);
+  const mul = (a, k) => vec(a.x * k, a.y * k);
+  const dot = (a, b) => a.x*b.x + a.y*b.y;
+  const len = a => Math.hypot(a.x, a.y);
+  const dist = (a, b) => len(sub(a, b));
+  const mid = (a, b) => mul(add(a, b), 0.5);
+  const ang = (a) => Math.atan2(a.y, a.x);
+  const rot = (a, t) => vec(a.x*Math.cos(t) - a.y*Math.sin(t), a.x*Math.sin(t) + a.y*Math.cos(t));
+  const polar = (r, t) => vec(r*Math.cos(t), r*Math.sin(t));
+  const almostEq = (a, b, e=1e-7) => Math.abs(a-b) < e;
+  const keyPt = (p, q=1e6) => `${Math.round(p.x*q)/q},${Math.round(p.y*q)/q}`;
+
+  // ---------- Penrose tiling via Robinson triangles (Preshing) ----------
+  // Triangle representation: {c: 0|1, A, B, C}  where the "base" edge is B--C (we won't stroke that edge).
+  function initialWheel() {
+    const tris = [];
+    for (let i=0; i<10; i++) {
+      let B = polar(1, (2*i - 1) * Math.PI / 10);
+      let C = polar(1, (2*i + 1) * Math.PI / 10);
+      if (i % 2 === 0) [B, C] = [C, B];  // mirror alternating triangles
+      tris.push({c:0, A:vec(0,0), B, C});
+    }
+    return tris;
+  }
+  function subdivide(tris) {
+    // Exactly as in Preshing's article:
+    // red(0): P = A + (B-A)/phi ; -> (0, C,P,B) and (1, P,C,A)
+    // blue(1): Q = B + (A-B)/phi ; R = B + (C-B)/phi ; -> (1, R,C,A), (1, Q,R,B), (0, R,Q,A)
+    const res = [];
+    for (const t of tris) {
+      const {c, A, B, C} = t;
+      if (c === 0) {
+        const P = add(A, mul(sub(B, A), 1/PHI));
+        res.push({c:0, A:C, B:P, C:B});
+        res.push({c:1, A:P, B:C, C:A});
+      } else {
+        const Q = add(B, mul(sub(A, B), 1/PHI));
+        const R = add(B, mul(sub(C, B), 1/PHI));
+        res.push({c:1, A:R, B:C, C:A});
+        res.push({c:1, A:Q, B:R, C:B});
+        res.push({c:0, A:R, B:Q, C:A});
+      }
+    }
+    return res;
+  }
+  function triangles(iter=6) {
+    let t = initialWheel();
+    for (let i=0;i<iter;i++) t = subdivide(t);
+    return t;
+  }
+  function rhombsFromTriangles(tris) {
+    // Pair triangles of same color that share base edge B--C
+    const map = new Map(); // key = `${color}|${edgeKey}`
+    const ek = (p,q)=> {
+      // orientation-independent key; order lexicographically
+      const k1 = keyPt(p), k2 = keyPt(q);
+      return (k1<k2) ? `${k1}|${k2}` : `${k2}|${k1}`;
+    };
+    for (const t of tris) {
+      const k = `${t.c}|${ek(t.B, t.C)}`;
+      if (!map.has(k)) map.set(k, []);
+      map.get(k).push(t);
+    }
+    const tiles = [];
+    for (const [k, arr] of map.entries()) {
+      if (arr.length < 2) continue; // should be 2
+      const t1 = arr[0], t2 = arr[1];
+      const verts = [t1.A, t1.B, t2.A, t1.C]; // four distinct points (might be unordered)
+      // Order them around centroid to form a nice polygon
+      const ctr = verts.reduce((s,p)=>add(s,p), vec(0,0));
+      ctr.x/=4; ctr.y/=4;
+      const ordered = verts.slice().sort((p,q)=>Math.atan2(p.y-ctr.y,p.x-ctr.x)-Math.atan2(q.y-ctr.y,q.x-ctr.x));
+      tiles.push({type: (t1.c===0?'thin':'thick'), poly: ordered});
+    }
+    return tiles;
+  }
+  function uniqueVertices(tiles) {
+    const map = new Map();
+    for (const tile of tiles) {
+      for (const p of tile.poly) {
+        const k = keyPt(p, 1e7);
+        if (!map.has(k)) map.set(k, p);
+      }
+    }
+    return [...map.values()];
+  }
+
+  // ---------- Canvas + world transform ----------
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  const tip = document.getElementById('tip');
+  let W=0,H=0, scale=1, offset=vec(0,0);
+
+  function fitView(points, margin=30) {
+    if (points.length===0) return;
+    let minx=+1e9, miny=+1e9, maxx=-1e9, maxy=-1e9;
+    for (const p of points) {
+      if (p.x<minx) minx=p.x; if (p.x>maxx) maxx=p.x;
+      if (p.y<miny) miny=p.y; if (p.y>maxy) maxy=p.y;
+    }
+    const bw = maxx-minx, bh=maxy-miny;
+    const vw = W - margin*2, vh = H - margin*2;
+    scale = Math.min(vw/bw, vh/bh);
+    if (!isFinite(scale) || scale<=0) scale=1;
+    const cx = (minx+maxx)/2, cy=(miny+maxy)/2;
+    offset = vec(W/2 - scale*cx, H/2 - scale*cy);
+  }
+  const w2s = p => vec(offset.x + p.x*scale, offset.y + p.y*scale);
+  const s2w = p => vec((p.x - offset.x)/scale, (p.y - offset.y)/scale);
+
+  // ---------- Selection state ----------
+  let tiles = [], vertices = [];
+  let selected = new Set(); // keys of vertices
+  let redCenters = new Map(); // key-> {pt:vec, support:[indices]}
+  let hoverVtxKey = null;
+
+  // Shift-rect selection
+  let dragging=false, dragStart=null, dragEnd=null;
+  let fiveFoldMode = false; // 五对称选点模式
+
+  // ---------- Five-fold symmetry helpers ----------
+  function getFiveFoldSymmetricPoints(pt, allPoints) {
+    // 计算与 pt 关于原点五对称的所有点（包括自己）
+    const symmetric = [pt];
+    const center = vec(0, 0);
+    const baseAngle = Math.atan2(pt.y - center.y, pt.x - center.x);
+    const radius = dist(pt, center);
+    
+    // 生成其他 4 个对称点的理论位置
+    for (let i = 1; i < 5; i++) {
+      const angle = baseAngle + i * THETA;
+      const theoreticalPt = vec(
+        center.x + radius * Math.cos(angle),
+        center.y + radius * Math.sin(angle)
+      );
+      
+      // 在实际顶点中查找最接近的点
+      let minDist = Infinity;
+      let closest = null;
+      for (const v of allPoints) {
+        const d = dist(v, theoreticalPt);
+        if (d < minDist) {
+          minDist = d;
+          closest = v;
+        }
+      }
+      
+      // 如果找到的点足够接近（容差），则认为是对称点
+      if (closest && minDist < 0.01 * radius) {
+        symmetric.push(closest);
+      }
+    }
+    
+    return symmetric;
+  }
+
+  // ---------- Red center detection ----------
+  function circlesFromAngle(A,B,theta=THETA) {
+    const c = dist(A,B);
+    if (c < 1e-12) return [];
+    const r = c / (2*Math.sin(theta)); // radius so that chord AB subtends angle theta at any point on the circle not on minor arc AB
+    const P = mid(A,B);
+    const u = sub(B,A);
+    const n = vec(-u.y/len(u), u.x/len(u)); // unit normal
+    const d = r * Math.cos(theta); // distance from midpoint to circle center
+    const M1 = add(P, mul(n, d));
+    const M2 = add(P, mul(n, -d));
+    return [{o:M1,r}, {o:M2,r}];
+  }
+  function circleIntersections(C1, C2) {
+    const p0 = C1.o, p1=C2.o, r0=C1.r, r1=C2.r;
+    const d = dist(p0,p1);
+    if (d > r0+r1+1e-12) return [];
+    if (d < Math.abs(r0-r1)-1e-12) return [];
+    if (d < 1e-12 && Math.abs(r0-r1) < 1e-12) return []; // coincident circles (ignore)
+    const a = (r0*r0 - r1*r1 + d*d) / (2*d);
+    const h2 = r0*r0 - a*a;
+    const h = h2<0 ? 0 : Math.sqrt(h2);
+    const p2 = add(p0, mul(vec((p1.x-p0.x)/d, (p1.y-p0.y)/d), a));
+    const rx = -(p1.y-p0.y) * (h/d);
+    const ry =  (p1.x-p0.x) * (h/d);
+    if (h < 1e-12) return [p2];
+    return [ vec(p2.x+rx, p2.y+ry), vec(p2.x-rx, p2.y-ry) ];
+  }
+  function angleBetween(u,v) {
+    const a = Math.atan2(u.y, u.x), b = Math.atan2(v.y, v.x);
+    let d = Math.abs(a-b);
+    if (d>Math.PI) d = TAU - d;
+    return d;
+  }
+  function verify72Around(center, pts, angTolDeg) {
+    const angTol = (angTolDeg || 0.8) * DEG; // default 0.8°
+    const angles = pts.filter(p => dist(p,center) > 1e-7).map(p => Math.atan2(p.y-center.y, p.x-center.x));
+    // normalize to [0,2π)
+    for (let i=0;i<angles.length;i++) { if (angles[i] < 0) angles[i]+=TAU; }
+    angles.sort((a,b)=>a-b);
+    const theta = THETA;
+    // try each angle as the starting phase
+    for (let i=0;i<angles.length;i++) {
+      const base = angles[i];
+      let ok = true;
+      const indices = [i];
+      for (let k=1;k<5 && ok;k++) {
+        const target = (base + k*theta) % TAU;
+        // find nearest angle within tol
+        let foundIdx = -1;
+        // binary-ish search window: since angles sorted, check small neighborhood
+        for (let j=0;j<angles.length;j++) {
+          let d = Math.abs(angles[j]-target);
+          if (d>Math.PI) d = TAU - d;
+          if (d <= angTol) { foundIdx = j; break; }
+        }
+        if (foundIdx===-1) ok=false; else indices.push(foundIdx);
+      }
+      if (ok) return true;
+    }
+    return false;
+  }
+  function computeRedCenters(angTolDeg) {
+    redCenters.clear();
+    const pts = vertices.filter(v => selected.has(keyPt(v,1e7)));
+    const N = pts.length;
+    if (N < 5) return;
+
+    const theta = THETA, tol = (angTolDeg||0.8)*DEG;
+    // enumerate ordered triples A,B,C (distinct)
+    for (let i=0;i<N;i++) for (let j=0;j<N;j++) if (j!==i)
+      for (let k=0;k<N;k++) if (k!==i && k!==j) {
+        const A = pts[i], B = pts[j], C = pts[k];
+        // circles for angle(A,O,B)=theta and angle(B,O,C)=theta
+        const cAB = circlesFromAngle(A,B,theta), cBC = circlesFromAngle(B,C,theta);
+        for (const s1 of cAB) for (const s2 of cBC) {
+          const ints = circleIntersections(s1,s2);
+          for (const O of ints) {
+            // discard trivial intersection at B
+            if (dist(O,B) < 1e-7) continue;
+            // quick pre-check: the two angles are ~theta
+            const dab = angleBetween(sub(A,O), sub(B,O));
+            const dbc = angleBetween(sub(B,O), sub(C,O));
+            if (Math.abs(dab-theta) > tol || Math.abs(dbc-theta) > tol) continue;
+            // full check: does there exist 5 selected points forming 72° steps?
+            if (verify72Around(O, pts, angTolDeg)) {
+              const k = keyPt(O,1e6);
+              if (!redCenters.has(k)) redCenters.set(k, {pt:O});
+            }
+          }
+        }
+      }
+  }
+
+  // ---------- Rendering ----------
+  function draw() {
+    ctx.clearRect(0,0,W,H);
+    // tiles
+    ctx.save();
+    ctx.lineJoin = "round";
+    for (const t of tiles) {
+      ctx.beginPath();
+      const p0 = w2s(t.poly[0]);
+      ctx.moveTo(p0.x,p0.y);
+      for (let i=1;i<t.poly.length;i++) {
+        const p = w2s(t.poly[i]);
+        ctx.lineTo(p.x,p.y);
+      }
+      ctx.closePath();
+      ctx.fillStyle = (t.type==='thin')? "rgba(108,191,67,0.85)" : "rgba(143,185,255,0.85)";
+      ctx.strokeStyle = (t.type==='thin')? "#355f25" : "#2b395a";
+      ctx.lineWidth = 1;
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // vertices
+    for (const v of vertices) {
+      const s = w2s(v);
+      const k = keyPt(v,1e7);
+      const r = (hoverVtxKey===k)? 3.4 : 2.6;
+      // light halo
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, r+2.2, 0, TAU);
+      ctx.fillStyle = "rgba(255,255,255,0.06)";
+      ctx.fill();
+      // point
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, r, 0, TAU);
+      if (selected.has(k)) {
+        ctx.fillStyle = "#000"; ctx.fill();
+        ctx.lineWidth = 1.6; ctx.strokeStyle = "#000"; ctx.stroke();
+      } else {
+        ctx.fillStyle = "#9aa4b2"; ctx.fill();
+        ctx.lineWidth = 1.2; ctx.strokeStyle = "#c0c8d6"; ctx.stroke();
+      }
+    }
+
+    // red centers
+    for (const {pt} of redCenters.values()) {
+      const s = w2s(pt);
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, 4.2, 0, TAU);
+      ctx.fillStyle = "#ff375f";
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "#ffd1dc";
+      ctx.stroke();
+    }
+
+    // selection rectangle
+    if (dragging && dragStart && dragEnd) {
+      const x = Math.min(dragStart.x, dragEnd.x), y = Math.min(dragStart.y, dragEnd.y);
+      const w = Math.abs(dragEnd.x - dragStart.x), h = Math.abs(dragEnd.y - dragStart.y);
+      ctx.fillStyle = "rgba(95,179,255,0.12)";
+      ctx.strokeStyle = "rgba(95,179,255,0.6)";
+      ctx.lineWidth = 1;
+      ctx.fillRect(x,y,w,h);
+      ctx.strokeRect(x,y,w,h);
+    }
+
+    updateStats();
+  }
+
+  // ---------- Interaction ----------
+  function findNearestVertex(screenPt, maxPx=10) {
+    let bestKey=null, bestD=maxPx+1, best=null;
+    for (const v of vertices) {
+      const s = w2s(v);
+      const d = Math.hypot(s.x-screenPt.x, s.y-screenPt.y);
+      if (d < bestD && d <= maxPx) { bestD=d; bestKey=keyPt(v,1e7); best=v; }
+    }
+    return {key: bestKey, v: best};
+  }
+
+  cv.addEventListener('mousemove', (e)=>{
+    const rect = cv.getBoundingClientRect();
+    const p = vec(e.clientX-rect.left, e.clientY-rect.top);
+    const {key, v} = findNearestVertex(p, 12);
+    hoverVtxKey = key;
+    if (key) {
+      const w = v;
+      tip.style.display = "block";
+      tip.style.left = (p.x+12) + "px";
+      tip.style.top = (p.y-12) + "px";
+      tip.textContent = `(${w.x.toFixed(4)}, ${w.y.toFixed(4)})`;
+    } else {
+      tip.style.display = "none";
+    }
+    if (dragging) { dragEnd = p; }
+    draw();
+  });
+
+  cv.addEventListener('mouseleave', ()=>{ hoverVtxKey=null; tip.style.display="none"; draw(); });
+
+  cv.addEventListener('mousedown', (e)=>{
+    const rect = cv.getBoundingClientRect();
+    const p = vec(e.clientX-rect.left, e.clientY-rect.top);
+    if (e.shiftKey) { dragging=true; dragStart=p; dragEnd=p; return; }
+    const {key, v} = findNearestVertex(p, 12);
+    if (key) {
+      const shouldSelect = !selected.has(key);
+      
+      if (fiveFoldMode && v) {
+        // 五对称模式：找到所有对称点
+        const symmetricPoints = getFiveFoldSymmetricPoints(v, vertices);
+        for (const symPt of symmetricPoints) {
+          const symKey = keyPt(symPt, 1e7);
+          if (shouldSelect) {
+            selected.add(symKey);
+          } else {
+            selected.delete(symKey);
+          }
+        }
+      } else {
+        // 普通模式：只切换当前点
+        if (shouldSelect) {
+          selected.add(key);
+        } else {
+          selected.delete(key);
+        }
+      }
+      
+      draw();
+    }
+  });
+
+  cv.addEventListener('mouseup', (e)=>{
+    if (!dragging) return;
+    dragging=false;
+    const rect = cv.getBoundingClientRect();
+    const x0 = Math.min(dragStart.x, dragEnd.x), y0=Math.min(dragStart.y, dragEnd.y);
+    const x1 = Math.max(dragStart.x, dragEnd.x), y1=Math.max(dragStart.y, dragEnd.y);
+    // toggle all vertices inside rect
+    for (const v of vertices) {
+      const s = w2s(v);
+      if (s.x>=x0 && s.x<=x1 && s.y>=y0 && s.y<=y1) {
+        const k = keyPt(v,1e7);
+        if (selected.has(k)) selected.delete(k); else selected.add(k);
+      }
+    }
+    dragStart = dragEnd = null;
+    draw();
+  });
+
+  // ---------- Controls ----------
+  const iter = document.getElementById('iter');
+  const iterNum = document.getElementById('iterNum');
+  const angTol = document.getElementById('angTol');
+  const angTolNum = document.getElementById('angTolNum');
+  const fiveFoldCheckbox = document.getElementById('fiveFold');
+
+  iter.addEventListener('input', ()=>{ iterNum.value = iter.value; regen(); });
+  iterNum.addEventListener('change', ()=>{ iter.value = iterNum.value; regen(); });
+  document.getElementById('regen').addEventListener('click', regen);
+
+  angTol.addEventListener('input', ()=>{ angTolNum.value = angTol.value; draw(); });
+  angTolNum.addEventListener('change', ()=>{ angTol.value = angTolNum.value; draw(); });
+
+  fiveFoldCheckbox.addEventListener('change', ()=>{ fiveFoldMode = fiveFoldCheckbox.checked; });
+
+  document.getElementById('clearSel').addEventListener('click', ()=>{ selected.clear(); draw(); });
+  document.getElementById('random20').addEventListener('click', ()=>{
+    selected.clear();
+    // 随机从顶点里抽取 20 个，尽量分散
+    const idx = vertices.map((_,i)=>i);
+    // 朴素洗牌
+    for (let i=idx.length-1;i>0;i--) { const j=(Math.random()*(i+1))|0; [idx[i],idx[j]]=[idx[j],idx[i]]; }
+    const take = Math.min(20, vertices.length);
+    for (let i=0;i<take;i++) selected.add(keyPt(vertices[idx[i]],1e7));
+    draw();
+  });
+
+  document.getElementById('calc').addEventListener('click', ()=>{
+    computeRedCenters(parseFloat(angTol.value));
+    draw();
+  });
+  document.getElementById('clearRed').addEventListener('click', ()=>{ redCenters.clear(); draw(); });
+
+  function updateStats() {
+    const nBlack = selected.size;
+    const nRed = redCenters.size;
+    const el = document.getElementById('stats');
+    el.innerHTML = `当前黑点：<b>${nBlack}</b> 个　|　红点（中心）：<b>${nRed}</b> 个<br>
+    <span class="muted">角度容差：±${parseFloat(angTol.value).toFixed(1)}°；细分层数：${iter.value}</span>`;
+  }
+
+  function regen() {
+    // Build tiling
+    const tris = triangles(parseInt(iter.value,10));
+    tiles = rhombsFromTriangles(tris);
+    vertices = uniqueVertices(tiles);
+    // Fit canvas view
+    fitView(vertices, 40);
+    // 清空选择与红点
+    selected.clear(); redCenters.clear();
+    draw();
+  }
+
+  // ---------- Resize ----------
+  function onResize() {
+    const wrap = document.getElementById('canvasWrap');
+    W = wrap.clientWidth; H = wrap.clientHeight;
+    cv.width = W; cv.height = H;
+    fitView(vertices, 40);
+    draw();
+  }
+  window.addEventListener('resize', onResize);
+
+  // ---------- Init ----------
+  onResize();
+  regen();
+})();
+</script>
+</body>
+</html>
